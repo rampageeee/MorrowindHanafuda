@@ -127,8 +127,10 @@ function UI:update(dt)
   if width ~= self.last_w or height ~= self.last_h then self:render() end
 end
 
-function UI:add_text(x, y, value, scale, color, z, pivot)
-  local node = gui.new_text_node(vmath.vector3(x, y, z or 20), tostring(value or ""))
+-- GUI draw order follows node creation order; Z values outside the render
+-- range clip nodes instead of placing them in front of other GUI nodes.
+function UI:add_text(x, y, value, scale, color, _z, pivot)
+  local node = gui.new_text_node(vmath.vector3(x, y, 0), tostring(value or ""))
   gui.set_font(node, SYSTEM_FONT)
   gui.set_color(node, color or WHITE)
   gui.set_scale(node, vmath.vector3(scale or 1.0, scale or 1.0, 1.0))
@@ -137,8 +139,8 @@ function UI:add_text(x, y, value, scale, color, z, pivot)
   return node
 end
 
-function UI:add_box(x, y, width, height, color, z)
-  local node = gui.new_box_node(vmath.vector3(x, y, z or 0), vmath.vector3(width, height, 0))
+function UI:add_box(x, y, width, height, color, _z)
+  local node = gui.new_box_node(vmath.vector3(x, y, 0), vmath.vector3(width, height, 0))
   gui.set_color(node, color or WHITE)
   self.dynamic_nodes[#self.dynamic_nodes + 1] = node
   return node
