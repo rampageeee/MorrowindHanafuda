@@ -1,0 +1,19 @@
+key_trigger {
+  input: KEY_ESC
+  action: "key_escape"
+}
+
+key_trigger {
+  input: KEY_ENTER
+  action: "key_enter"
+}
+
+key_trigger {
+  input: KEY_SPACE
+  action: "key_space"
+}
+
+mouse_trigger {
+  input: MOUSE_BUTTON_1
+  action: "mouse_button_1"
+}

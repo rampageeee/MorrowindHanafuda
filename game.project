@@ -1,0 +1,33 @@
+[project]
+title = Hanafuda Koi-Koi
+version = 1.0.0
+
+[bootstrap]
+main_collection = /game/main.collectionc
+render = /builtins/render/default.renderc
+
+[display]
+width = 1280
+height = 720
+high_dpi = 1
+resizable = 1
+dynamic_orientation = 1
+
+[input]
+game_binding = /input/game.input_bindingc
+
+[graphics]
+default_texture_min_filter = linear
+default_texture_mag_filter = linear
+
+[render]
+clear_color = 0.055 0.075 0.11 1.0
+
+[android]
+package = com.adamogrodnikaudio.hanafuda
+
+[ios]
+bundle_identifier = com.adamogrodnikaudio.hanafuda
+
+[osx]
+bundle_identifier = com.adamogrodnikaudio.hanafuda.macos
