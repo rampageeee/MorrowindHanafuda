@@ -99,7 +99,7 @@ local function winner_text(view)
   return "ROUND DRAW"
 end
 
-function init(self)
+function UI:init()
   msg.post(".", "acquire_input_focus")
   self.dynamic_nodes, self.hit_targets, self.buttons = {}, {}, {}
   self.modal_buttons = {}
@@ -118,11 +118,11 @@ function init(self)
   self:render()
 end
 
-function final(self)
+function UI:final()
   for _, node in ipairs(self.dynamic_nodes or {}) do if node then gui.delete_node(node) end end
 end
 
-function update(self, dt)
+function UI:update(dt)
   local width, height = gui.get_width(), gui.get_height()
   if width ~= self.last_w or height ~= self.last_h then self:render() end
 end
@@ -435,7 +435,7 @@ function UI:button_action(action)
   self:act({ type = action })
 end
 
-function on_input(self, action_id, action)
+function UI:on_input(action_id, action)
   if not action or (not action.pressed and not action.released) then return false end
   if action.released then return true end
   local x, y = action.x, action.y
@@ -455,4 +455,21 @@ function on_input(self, action_id, action)
   return false
 end
 
-return UI
+-- Defold passes a script instance as self. Keep the UI methods and their
+-- state on a plain Lua table, then forward the engine callbacks to it.
+function init(self)
+  self.ui = setmetatable({}, { __index = UI })
+  self.ui:init()
+end
+
+function final(self)
+  if self.ui then self.ui:final() end
+end
+
+function update(self, dt)
+  if self.ui then self.ui:update(dt) end
+end
+
+function on_input(self, action_id, action)
+  return self.ui and self.ui:on_input(action_id, action) or false
+end
