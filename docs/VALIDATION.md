@@ -2,6 +2,11 @@
 
 This hand-off is source-only; generated platform bundles are not included.
 
+The 2026-09-24 UI, AI mode, and tavern changes have had a source review and
+`git diff --check`. They have not been run through Bob or the pure Lua suite in
+this environment: the user requested no build, and no Lua interpreter is
+installed here. The record below describes the earlier 2026-09-10 baseline.
+
 Validated on 2026-09-10 with Defold/Bob 1.13.1 (`574678c`) and OpenJDK 25.
 
 ## Passed

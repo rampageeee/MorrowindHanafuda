@@ -2,7 +2,7 @@
 local root = (... and ... ~= "") and ... or "."
 package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
 
-local suites = { "tests.test_cards", "tests.test_combinations", "tests.test_session" }
+local suites = { "tests.test_cards", "tests.test_combinations", "tests.test_session", "tests.test_tavern" }
 local passed = 0
 for _, name in ipairs(suites) do
     io.write("[TEST] " .. name .. "\n")

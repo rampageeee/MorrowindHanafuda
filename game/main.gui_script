@@ -6,12 +6,14 @@
 -- artwork, textures, or sounds are bundled.
 local session = require "logic.session"
 local cards = require "logic.cards"
+local tavern = require "logic.tavern"
 local UI = {}
 
 local T = cards.type
 local TYPE_NAMES = { [T.bright] = "BRIGHT", [T.animal] = "ANIMAL", [T.ribbon] = "RIBBON", [T.chaff] = "PLAIN" }
 local TYPE_SHORT = { [T.bright] = "B", [T.animal] = "A", [T.ribbon] = "R", [T.chaff] = "C" }
 local MONTH_NAMES = { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" }
+local MONTH_FLOWERS = { "PINE", "PLUM", "CHERRY", "WISTERIA", "IRIS", "PEONY", "BUSH CLOVER", "PAMPAS", "CHRYSANTHEMUM", "MAPLE", "WILLOW", "PAULOWNIA" }
 local SYMBOL_NAMES = {
   [cards.symbol.crane] = "CRANE", [cards.symbol.curtain] = "CURTAIN", [cards.symbol.moon] = "MOON",
   [cards.symbol.rainman] = "RAIN MAN", [cards.symbol.phoenix] = "PHOENIX", [cards.symbol.warbler] = "WARBLER",
@@ -24,13 +26,35 @@ local SYMBOL_NAMES = {
 local WHITE = vmath.vector4(0.96, 0.96, 0.90, 1.0)
 local SOFT = vmath.vector4(0.75, 0.82, 0.79, 1.0)
 local MUTED = vmath.vector4(0.53, 0.63, 0.60, 1.0)
-local INK = vmath.vector4(0.06, 0.10, 0.11, 1.0)
 local GOLD = vmath.vector4(1.00, 0.77, 0.25, 1.0)
 local RED = vmath.vector4(0.90, 0.34, 0.32, 1.0)
 local GREEN = vmath.vector4(0.25, 0.72, 0.51, 1.0)
 local PANEL = vmath.vector4(0.075, 0.16, 0.16, 0.96)
 local PANEL_ALT = vmath.vector4(0.10, 0.21, 0.20, 0.96)
+local TABLE_FELT = vmath.vector4(0.055, 0.19, 0.17, 1.0)
+local CARD_PAPER = vmath.vector4(0.93, 0.88, 0.75, 1.0)
+local CARD_INK = vmath.vector4(0.18, 0.20, 0.19, 1.0)
 local SYSTEM_FONT = hash("system_font")
+
+local HELP = {
+  confirm_play = "Place the selected hand card on the field.", cancel_play = "Return this card to your hand.",
+  draw_card = "Reveal one card from the deck to finish your turn.", confirm_draw = "Resolve the revealed deck card.",
+  advance = "Reveal or resolve the opponent's deck card.", open_rules = "Learn matching, scoring, and Koi-Koi calls.",
+  open_cards = "See the four card families and all scoring sets.", open_settings = "Choose rounds, rival, wager, and house rules for the next match.",
+  confirm_new = "Start a fresh deal with a new shuffle. An active wager is lost if you leave early.",
+  request_concede = "Forfeit this match and any active wager.", koi_koi = "Continue playing for a higher score, but risk losing this round.",
+  shobu = "Stop now and bank the shown round points.", next_round = "Deal the next round of this match.",
+  open_menu = "Open match actions, help, settings, and concession.",
+  cycle_rounds = "Choose how many rounds decide the match: 1, 3, 6, or 12.",
+  cycle_ai = "Choose a random novice, simple regular, or weighted adept rival.",
+  cycle_stake = "Choose a 0, 5, 10, 25, or 50 gold wager for the next match.",
+  cycle_multiplier = "Choose double at 7 points, add one per Koi-Koi call, or no multiplier.",
+  toggle_flower = "Score Flower Viewing Sake when curtain and sake cup are captured.",
+  toggle_moon = "Score Moon Viewing Sake when moon and sake cup are captured.",
+  toggle_lucky = "Score dealt four of a kind or four month pairs immediately.",
+  new_match = "Start the next match using these settings and a new shuffle.",
+}
+local AI_LABELS = { random = "TAVERN NOVICE", simple = "HOUSE REGULAR", weighted = "AKAVIRI ADEPT" }
 
 local TYPE_COLORS = {
   [T.bright] = vmath.vector4(0.95, 0.68, 0.23, 1.0),
@@ -81,16 +105,17 @@ local function card_data(id)
   return data, month, kind
 end
 
-local function card_label(id)
-  local data, month, kind = card_data(id)
-  local symbol = SYMBOL_NAMES[data.symbol] or "CARD"
-  return string.format("%s  %s\n%s", MONTH_NAMES[month] or "MONTH", TYPE_SHORT[kind] or "C", symbol)
-end
-
 local function card_color(id)
   local _, _, kind = card_data(id)
   local c = TYPE_COLORS[kind] or TYPE_COLORS[T.chaff]
   return vmath.vector4(math.min(1, c.x * 0.82 + 0.16), math.min(1, c.y * 0.82 + 0.16), math.min(1, c.z * 0.82 + 0.16), 1)
+end
+
+local function card_tooltip(id, zone)
+  if id == 0 or zone == "opponent" then return "Cards remain hidden until played. Each turn includes one deck draw." end
+  local data, month, kind = card_data(id)
+  local verb = zone == "hand" and "Select to play. " or (zone == "field" and "Match by month. " or "")
+  return string.format("%s%s / %s / %s / %s", verb, MONTH_NAMES[month] or "?", MONTH_FLOWERS[month] or "?", TYPE_NAMES[kind] or "CARD", SYMBOL_NAMES[data.symbol] or "PLAIN")
 end
 
 local function winner_text(view)
@@ -101,13 +126,19 @@ end
 
 function UI:init()
   msg.post(".", "acquire_input_focus")
-  self.dynamic_nodes, self.hit_targets, self.buttons = {}, {}, {}
+  self.dynamic_nodes, self.hit_targets, self.hover_targets, self.buttons = {}, {}, {}, {}
   self.modal_buttons = {}
   self.last_w, self.last_h = 0, 0
-  self.error_message, self.notice, self.modal, self.conceded = nil, nil, false, false
+  self.error_message, self.notice, self.modal = nil, nil, nil
   self.intro, self.last_phase, self.dismissed_phase = true, nil, nil
+  self.options = { rounds = 3, ai = "weighted", stake = 0,
+    rules = { double_points_over_7 = true, each_time_koi_koi = false,
+      flower_viewing_sake = true, moon_viewing_sake = true, lucky_hands = true } }
+  self.tavern, self.match_serial, self.settled_match = tavern.new(100), 0, true
+  self.hover, self.hover_key, self.hover_x, self.hover_y = nil, nil, 0, 0
+  self:load_profile()
 
-  local ok, result = pcall(session.new, { rounds = 3, seed = os.time(), presentation_steps = true })
+  local ok, result = pcall(session.new, { rounds = self.options.rounds, seed = os.time(), presentation_steps = true, ai = self.options.ai, rules = self.options.rules })
   if ok and result then
     self.match = result
     local started, err = pcall(function() self.match:start() end)
@@ -118,7 +149,67 @@ function UI:init()
   self:render()
 end
 
+function UI:load_profile()
+  local ok_path, path = pcall(sys.get_save_file, "morrowind_hanafuda", "profile")
+  if not ok_path then return end
+  self.save_path = path
+  local ok_load, saved = pcall(sys.load, path)
+  if not ok_load or type(saved) ~= "table" then return end
+  if type(saved.gold) == "number" and saved.gold >= 0 and saved.gold == math.floor(saved.gold) then self.tavern = tavern.new(saved.gold) end
+  if type(saved.match_serial) == "number" and saved.match_serial >= 0 and saved.match_serial == math.floor(saved.match_serial) then self.match_serial = saved.match_serial end
+  local options = type(saved.options) == "table" and saved.options or {}
+  if options.rounds == 1 or options.rounds == 3 or options.rounds == 6 or options.rounds == 12 then self.options.rounds = options.rounds end
+  if AI_LABELS[options.ai] then self.options.ai = options.ai end
+  if options.stake == 0 or options.stake == 5 or options.stake == 10 or options.stake == 25 or options.stake == 50 then self.options.stake = options.stake end
+  if type(options.rules) == "table" then
+    for name in pairs(self.options.rules) do
+      if type(options.rules[name]) == "boolean" then self.options.rules[name] = options.rules[name] end
+    end
+  end
+end
+
+function UI:save_profile()
+  if self.save_path then pcall(sys.save, self.save_path, { gold = self.tavern.gold, options = self.options, match_serial = self.match_serial }) end
+end
+
+function UI:begin_match()
+  local stake = self.options.stake
+  if stake > self.tavern.gold then self.notice = "You do not have enough gold for that wager."; self:render(); return false end
+  local next_serial = self.match_serial + 1
+  local seed = os.time() + next_serial * 9973
+  local ok, result = pcall(function()
+    local next_match = session.new({ rounds = self.options.rounds, seed = seed,
+      presentation_steps = true, ai = self.options.ai, rules = self.options.rules })
+    next_match:start()
+    return next_match
+  end)
+  if not ok then self.notice = tostring(result); self:render(); return false end
+  if self.tavern.stake > 0 then self.tavern:settle("opponent") end
+  if stake > 0 then
+    local reserved, err = self.tavern:reserve(stake)
+    if not reserved then self.notice = err; self:render(); return false end
+  else self.tavern.last_result = nil end
+  self.match_serial = next_serial
+  self.match = result
+  self.settled_match = false
+  self.error_message, self.notice, self.modal, self.intro, self.dismissed_phase = nil, nil, nil, false, nil
+  self:save_profile()
+  self:settle_if_finished(self.match:view())
+  self:render()
+  return true
+end
+
+function UI:settle_if_finished(view)
+  if self.settled_match or not view then return end
+  if view.phase == "match_over" or view.phase == "conceded" then
+    if self.tavern.stake > 0 then self.tavern:settle(view.winner) end
+    self:save_profile()
+    self.settled_match = true
+  end
+end
+
 function UI:final()
+  self:save_profile()
   for _, node in ipairs(self.dynamic_nodes or {}) do if node then gui.delete_node(node) end end
 end
 
@@ -147,34 +238,47 @@ function UI:add_box(x, y, width, height, color, _z)
 end
 
 function UI:add_button(x, y, width, height, label, action_type, enabled, modal)
-  local color = enabled and vmath.vector4(0.13, 0.43, 0.35, 1.0) or vmath.vector4(0.13, 0.22, 0.22, 1.0)
+  local tooltip = HELP[action_type] or label
+  local key = "button:" .. tostring(action_type) .. ":" .. label
+  local hovered = self.hover_key == key
+  local color = enabled and (hovered and vmath.vector4(0.20, 0.55, 0.43, 1.0) or vmath.vector4(0.13, 0.39, 0.34, 1.0)) or vmath.vector4(0.13, 0.22, 0.22, 1.0)
   local box = self:add_box(x, y, width, height, color, modal and 91 or 31)
   self:add_box(x, y + height * 0.5 - 2, width - 4, 4, enabled and GOLD or MUTED, modal and 92 or 32)
   local item = { node = box, action = action_type, enabled = enabled ~= false }
   if modal then self.modal_buttons[#self.modal_buttons + 1] = item else self.buttons[#self.buttons + 1] = item end
+  self.hover_targets[#self.hover_targets + 1] = { node = box, tooltip = enabled and tooltip or (label .. " is unavailable now."), key = key, modal = modal == true }
   self:add_text(x, y - 5, label, width < 120 and 0.63 or 0.72, enabled and WHITE or MUTED, modal and 93 or 33)
   return box
 end
 
 function UI:add_card(x, y, width, height, id, face_up, is_selectable, zone, dim)
-  local border_color = is_selectable and GOLD or vmath.vector4(0.03, 0.07, 0.08, 1.0)
-  self:add_box(x, y, width + 8, height + 8, border_color, 9)
-  local body_color = face_up and card_color(id) or vmath.vector4(0.08, 0.22, 0.28, 1.0)
+  local key = "card:" .. tostring(id) .. ":" .. zone
+  local hovered = face_up and self.hover_key == key
+  local border_color = is_selectable and GOLD or (hovered and GREEN or vmath.vector4(0.03, 0.07, 0.08, 1.0))
+  self:add_box(x, y - 3, width + 8, height + 9, vmath.vector4(0.015, 0.045, 0.05, 0.85), 8)
+  self:add_box(x, y, width + 6, height + 6, border_color, 9)
+  local body_color = face_up and CARD_PAPER or vmath.vector4(0.08, 0.22, 0.28, 1.0)
   if dim then body_color = vmath.vector4(body_color.x * 0.42, body_color.y * 0.42, body_color.z * 0.42, 1.0) end
   local body = self:add_box(x, y, width, height, body_color, 10)
   if face_up then
-    local _, _, kind = card_data(id)
-    self:add_box(x, y + height * 0.5 - 7, width - 4, 5, TYPE_COLORS[kind], 11)
-    self:add_text(x, y + height * 0.13, card_label(id), width < 58 and 0.40 or (width < 72 and 0.49 or 0.58), INK, 13)
-    self:add_text(x, y - height * 0.39, string.format("#%02d", id or 0), width < 65 and 0.37 or 0.44, INK, 13)
+    local data, month, kind = card_data(id)
+    local accent = TYPE_COLORS[kind]
+    self:add_box(x, y + height * 0.5 - 6, width - 4, 8, accent, 11)
+    self:add_box(x - width * 0.5 + 5, y - 5, 3, height - 20, accent, 11)
+    self:add_box(x, y - height * 0.12, width * 0.72, height * 0.39, card_color(id), 11)
+    self:add_text(x, y + height * 0.28, MONTH_NAMES[month] or "?", width < 55 and 0.45 or 0.58, CARD_INK, 13)
+    self:add_text(x, y - height * 0.10, SYMBOL_NAMES[data.symbol] or "PLAIN", width < 56 and 0.32 or (width < 72 and 0.39 or 0.48), CARD_INK, 13)
+    self:add_text(x, y - height * 0.39, TYPE_SHORT[kind] .. "  " .. string.format("%02d", month), width < 55 and 0.34 or 0.41, CARD_INK, 13)
   else
-    self:add_box(x, y, width * 0.72, height * 0.80, vmath.vector4(0.12, 0.34, 0.37, 1.0), 11)
-    self:add_text(x, y + 2, "◆\n◆", width < 55 and 0.48 or 0.62, GOLD, 13)
+    self:add_box(x, y, width * 0.74, height * 0.83, vmath.vector4(0.12, 0.34, 0.37, 1.0), 11)
+    self:add_box(x, y, width * 0.54, height * 0.68, vmath.vector4(0.07, 0.23, 0.25, 1.0), 11)
+    self:add_text(x, y - 3, "H\nF", width < 55 and 0.53 or 0.68, GOLD, 13)
   end
   if is_selectable then
     self:add_text(x, y - height * 0.5 - 13, zone == "field" and "MATCH" or "PLAY", width < 66 and 0.42 or 0.48, GOLD, 14)
     self.hit_targets[#self.hit_targets + 1] = { node = body, action = "select_card", card_id = id }
   end
+  self.hover_targets[#self.hover_targets + 1] = { node = body, tooltip = card_tooltip(id, zone), key = key, modal = false }
   return body
 end
 
@@ -186,16 +290,25 @@ end
 
 function UI:clear_dynamic()
   for _, node in ipairs(self.dynamic_nodes) do if node then gui.delete_node(node) end end
-  self.dynamic_nodes, self.hit_targets, self.buttons, self.modal_buttons = {}, {}, {}, {}
+  self.dynamic_nodes, self.hit_targets, self.hover_targets, self.buttons, self.modal_buttons = {}, {}, {}, {}, {}
 end
 
 function UI:draw_header(width, height, view)
-  self:add_box(width * 0.5, height - 29, width, 58, vmath.vector4(0.035, 0.10, 0.11, 1.0), 0)
-  self:add_text(20, height - 21, "HANAFUDA  /  KOI-KOI", 0.92, GOLD, 4, gui.PIVOT_W)
   local scores = type(view.scores) == "table" and view.scores or {}
-  self:add_text(width * 0.5, height - 20, string.format("YOU %d     CPU %d", safe_number(scores.you, 0), safe_number(scores.opponent, 0)), 0.78, WHITE, 4)
-  self:add_text(width - 20, height - 20, string.format("ROUND %d/%d", safe_number(view.round, 1), safe_number(view.rounds, 3)), 0.68, SOFT, 4, gui.PIVOT_E)
-  self:add_text(width * 0.5, height - 48, view.prompt ~= "" and view.prompt or "Your turn", 0.62, view.phase == "player_decision" and GOLD or SOFT, 4)
+  local compact = width < 650
+  self:add_box(width * 0.5, height - (compact and 43 or 29), width, compact and 86 or 58, vmath.vector4(0.035, 0.10, 0.11, 1.0), 0)
+  self:add_box(width * 0.5, height - (compact and 85 or 57), width, 2, GOLD, 1)
+  if compact then
+    self:add_text(width * 0.5, height - 17, "HANAFUDA  /  KOI-KOI", 0.79, GOLD, 4)
+    self:add_text(14, height - 43, string.format("YOU %d   CPU %d", safe_number(scores.you, 0), safe_number(scores.opponent, 0)), 0.66, WHITE, 4, gui.PIVOT_W)
+    self:add_text(width - 14, height - 43, string.format("ROUND %d/%d", safe_number(view.round, 1), safe_number(view.rounds, 3)), 0.63, SOFT, 4, gui.PIVOT_E)
+    self:add_text(width * 0.5, height - 70, view.prompt ~= "" and view.prompt or "Your turn", 0.54, view.phase == "player_decision" and GOLD or SOFT, 4)
+  else
+    self:add_text(20, height - 21, "HANAFUDA  /  KOI-KOI", 0.92, GOLD, 4, gui.PIVOT_W)
+    self:add_text(width * 0.5, height - 20, string.format("YOU %d     CPU %d", safe_number(scores.you, 0), safe_number(scores.opponent, 0)), 0.78, WHITE, 4)
+    self:add_text(width - 20, height - 20, string.format("ROUND %d/%d", safe_number(view.round, 1), safe_number(view.rounds, 3)), 0.68, SOFT, 4, gui.PIVOT_E)
+    self:add_text(width * 0.5, height - 48, view.prompt ~= "" and view.prompt or "Your turn", 0.62, view.phase == "player_decision" and GOLD or SOFT, 4)
+  end
   if self.notice then
     self:add_box(width * 0.5, height - 72, math.min(width - 28, 760), 22, vmath.vector4(0.35, 0.10, 0.11, 0.96), 5)
     self:add_text(width * 0.5, height - 78, self.notice, 0.53, WHITE, 6)
@@ -205,6 +318,7 @@ end
 function UI:draw_card_panel(view, x, y, width, height, card_width, gap, portrait)
   local field = list_or_empty(view.field)
   self:panel(x, y, width, height, "TABLE  /  FIELD " .. tostring(#field), false)
+  self:add_box(x, y - 8, width - 14, height - 54, TABLE_FELT, -3)
   -- Keep the staged card visible beside the table, mirroring the source UI's
   -- drawn-card animation while remaining actionable through the buttons.
   if view.pending_card then
@@ -214,8 +328,8 @@ function UI:draw_card_panel(view, x, y, width, height, card_width, gap, portrait
   end
   local cols = 4
   local rows = math.max(1, math.ceil(#field / cols))
-  local card_height = math.min(card_width * 1.36, (height - 52) / rows - 7)
-  card_width = math.min(card_width, (width - 28 - gap * (cols - 1)) / cols)
+  card_width = math.max(12, math.min(card_width, (width - 28 - gap * (cols - 1)) / cols, ((height - 62) / rows - 7) / 1.36))
+  local card_height = card_width * 1.36
   for i, card in ipairs(field) do
     local id = card_id(card) or i
     local row, col = math.floor((i - 1) / cols), (i - 1) % cols
@@ -236,6 +350,15 @@ end
 function UI:draw_side(view, x, y, width, height)
   local captured = type(view.captured_groups) == "table" and view.captured_groups or {}
   local you, cpu = captured.you or {}, captured.opponent or {}
+  if height < 240 then
+    self:panel(x, y, width, height, "ROUND STATUS", true)
+    self:add_text(x, y + 7, string.format("CAPTURED  B %d/%d   A %d/%d   R %d/%d   C %d/%d",
+      pool_count(you, 1), pool_count(cpu, 1), pool_count(you, 2), pool_count(cpu, 2),
+      pool_count(you, 3), pool_count(cpu, 3), pool_count(you, 4), pool_count(cpu, 4)), width < 450 and 0.39 or 0.56, WHITE, 4)
+    local combos = list_or_empty(view.combinations and view.combinations.you)
+    self:add_text(x, y - 19, #combos > 0 and ("YOUR YAKU  " .. combos[#combos].name .. "  +" .. combos[#combos].points) or "YOUR YAKU  none yet", 0.47, GOLD, 4)
+    return
+  end
   self:panel(x, y + height * 0.25, width, height * 0.49, "CAPTURED CARDS", true)
   local labels = { "BRIGHT", "ANIMAL", "RIBBON", "PLAIN" }
   local colors = { TYPE_COLORS[T.bright], TYPE_COLORS[T.animal], TYPE_COLORS[T.ribbon], TYPE_COLORS[T.chaff] }
@@ -247,13 +370,13 @@ function UI:draw_side(view, x, y, width, height)
   end
   self:add_text(x, y + height * 0.49 + height * 0.25 - 194, "YOU / CPU", 0.48, MUTED, 4)
 
-  self:panel(x, y - height * 0.25, width, height * 0.47, "COMBINATIONS", false)
-  local combos = list_or_empty(view.new_combinations)
+  self:panel(x, y - height * 0.25, width, height * 0.47, "YOUR YAKU", false)
+  local combos = list_or_empty(view.combinations and view.combinations.you)
   if #combos == 0 then
-    self:add_text(x, y - height * 0.25 + height * 0.47 * 0.24, "No new combination", 0.54, MUTED, 4)
+    self:add_text(x, y - height * 0.25 + height * 0.47 * 0.24, "No combination yet", 0.54, MUTED, 4)
   else
     for i, combo in ipairs(combos) do
-      if i <= 4 then self:add_text(x, y - height * 0.25 + height * 0.47 * 0.36 - (i - 1) * 27, string.format("%s  +%d", combo.name or "COMBINATION", safe_number(combo.points, 0)), 0.49, GOLD, 4) end
+      if i <= 6 then self:add_text(x, y - height * 0.25 + height * 0.47 * 0.36 - (i - 1) * 27, string.format("%s  +%d", combo.name or "COMBINATION", safe_number(combo.points, 0)), 0.44, GOLD, 4) end
     end
   end
 end
@@ -265,6 +388,8 @@ function UI:draw_controls(view, width, height, left_x, left_y, left_w, left_h)
   self:add_text(left_x, left_y + left_h * 0.5 - 84, tostring(safe_number(scores.you, 0)), 1.32, WHITE, 4)
   self:add_text(left_x, left_y + left_h * 0.5 - 123, "CPU  " .. tostring(safe_number(scores.opponent, 0)), 0.62, SOFT, 4)
   self:add_text(left_x, left_y + left_h * 0.5 - 157, string.format("DECK  %d", safe_number(view.deck_count, 0)), 0.54, MUTED, 4)
+  local wallet = self.tavern:view()
+  self:add_text(left_x, left_y + left_h * 0.5 - 182, string.format("GOLD %d   STAKE %d", wallet.gold, wallet.stake), 0.52, GOLD, 4)
   local actions = {}
   if view.phase == "player_play" then
     actions[#actions + 1] = { "PLAY SELECTED", "confirm_play", view.can_confirm_play }
@@ -277,11 +402,17 @@ function UI:draw_controls(view, width, height, left_x, left_y, left_w, left_h)
     actions[#actions + 1] = { "REVEAL CPU DRAW", "advance", view.can_advance }
   elseif view.phase == "opponent_drawn" then
     actions[#actions + 1] = { "CONTINUE", "advance", view.can_advance }
+  elseif view.phase == "player_decision" then
+    actions[#actions + 1] = { "KOI-KOI", "koi_koi", view.can_koi_koi }
+    actions[#actions + 1] = { "SHOBU / STOP", "shobu", view.can_shobu }
+  elseif view.phase == "round_over" then
+    actions[#actions + 1] = { "NEXT ROUND", "next_round", view.can_continue }
   end
   actions[#actions + 1] = { "RULES", "open_rules", true }
   actions[#actions + 1] = { "CARD GUIDE", "open_cards", true }
+  actions[#actions + 1] = { "SETTINGS", "open_settings", true }
   actions[#actions + 1] = { "NEW GAME", "confirm_new", view.can_new_match ~= false }
-  actions[#actions + 1] = { "CONCEDE", "request_concede", view.can_concede ~= false and view.phase ~= "match_over" and view.phase ~= "conceded" and not self.conceded }
+  actions[#actions + 1] = { "CONCEDE", "request_concede", view.can_concede ~= false and view.phase ~= "match_over" and view.phase ~= "conceded" }
   local bw, bh = left_w - 28, 32
   local by = left_y - left_h * 0.5 + 32
   for i, action in ipairs(actions) do
@@ -293,14 +424,37 @@ function UI:draw_hand(view, x, y, width, card_width, portrait)
   local hand = list_or_empty(view.hand)
   self:panel(x, y, width, portrait and 150 or 158, "YOUR HAND  " .. tostring(#hand), false)
   local gap = portrait and 3 or 5
-  local card_height = math.min(card_width * 1.36, 112)
   card_width = math.min(card_width, (width - 18 - gap * math.max(0, #hand - 1)) / math.max(1, #hand))
+  local card_height = math.min(card_width * 1.36, 112)
   local total = #hand * card_width + math.max(0, #hand - 1) * gap
   for i, card in ipairs(hand) do
     local id = card_id(card) or i
     local px = x - total * 0.5 + card_width * 0.5 + (i - 1) * (card_width + gap)
     self:add_card(px, y + 3, card_width, card_height, id, true, selectable(view, id, i), "hand")
   end
+end
+
+function UI:primary_action(view)
+  if view.phase == "player_play" then return "PLAY SELECTED", "confirm_play", view.can_confirm_play end
+  if view.phase == "player_draw" then return "DRAW FROM DECK", "draw_card", view.can_draw end
+  if view.phase == "player_drawn" then return "TAKE DRAWN CARD", "confirm_draw", view.can_confirm_draw end
+  if view.phase == "opponent_draw" then return "REVEAL CPU DRAW", "advance", view.can_advance end
+  if view.phase == "opponent_drawn" then return "CONTINUE", "advance", view.can_advance end
+  if view.phase == "round_over" then return "NEXT ROUND", "next_round", true end
+  if view.phase == "player_decision" then return "SHOBU / STOP", "shobu", true end
+  return "SELECT A CARD", nil, false
+end
+
+function UI:draw_portrait_controls(view, width)
+  if view.phase == "player_decision" then
+    self:add_button(width * 0.17, 34, width * 0.30, 48, "MENU", "open_menu", true)
+    self:add_button(width * 0.50, 34, width * 0.31, 48, "KOI-KOI", "koi_koi", view.can_koi_koi)
+    self:add_button(width * 0.83, 34, width * 0.30, 48, "SHOBU", "shobu", view.can_shobu)
+    return
+  end
+  local label, action, enabled = self:primary_action(view)
+  self:add_button(width * 0.26, 34, width * 0.46, 48, "MENU", "open_menu", true)
+  self:add_button(width * 0.74, 34, width * 0.46, 48, label, action or "select_hint", enabled)
 end
 
 function UI:draw_opponent(view, x, y, width, card_width, portrait)
@@ -330,22 +484,80 @@ function UI:draw_modal(width, height, title, body, actions, accent)
   end
 end
 
+function UI:draw_menu(view, width, height)
+  self:add_box(width * 0.5, height * 0.5, width, height, vmath.vector4(0.01, 0.03, 0.04, 0.78), 80)
+  local mw, mh = math.min(width - 24, 450), math.min(height - 24, 520)
+  self:add_box(width * 0.5, height * 0.5, mw, mh, PANEL, 85)
+  self:add_box(width * 0.5, height * 0.5 + mh * 0.5 - 3, mw - 6, 5, GOLD, 86)
+  self:add_text(width * 0.5, height * 0.5 + mh * 0.5 - 31, "GAME MENU", 0.86, GOLD, 89)
+  local wallet = self.tavern:view()
+  self:add_text(width * 0.5, height * 0.5 + mh * 0.5 - 60, string.format("PURSE %d GOLD  /  STAKE %d", wallet.gold, wallet.stake), 0.58, SOFT, 89)
+  local actions = {}
+  local label, action, enabled = self:primary_action(view)
+  if action and enabled then actions[#actions + 1] = { label, action } end
+  if view.phase == "player_decision" and view.can_koi_koi then actions[#actions + 1] = { "KOI-KOI / CONTINUE", "koi_koi" } end
+  actions[#actions + 1] = { "RULES AND SCORING", "open_rules" }
+  actions[#actions + 1] = { "CARD GUIDE", "open_cards" }
+  actions[#actions + 1] = { "MATCH SETTINGS", "open_settings" }
+  actions[#actions + 1] = { "NEW GAME", "confirm_new" }
+  if view.can_concede then actions[#actions + 1] = { "CONCEDE", "request_concede" } end
+  actions[#actions + 1] = { "CLOSE", "close_modal" }
+  local gap = math.min(45, (mh - 100) / #actions)
+  local top = height * 0.5 + mh * 0.5 - 96
+  for i, entry in ipairs(actions) do self:add_button(width * 0.5, top - (i - 1) * gap, mw - 38, gap - 6, entry[1], entry[2], true, true) end
+end
+
+function UI:draw_settings(width, height)
+  self:add_box(width * 0.5, height * 0.5, width, height, vmath.vector4(0.01, 0.03, 0.04, 0.80), 80)
+  local mw, mh = math.min(width - 24, 580), math.min(height - 24, 540)
+  self:add_box(width * 0.5, height * 0.5, mw, mh, PANEL, 85)
+  self:add_box(width * 0.5, height * 0.5 + mh * 0.5 - 3, mw - 6, 5, GOLD, 86)
+  self:add_text(width * 0.5, height * 0.5 + mh * 0.5 - 29, "NEXT MATCH", 0.86, GOLD, 89)
+  self:add_text(width * 0.5, height * 0.5 + mh * 0.5 - 56, "Tap a row to change it. Settings apply on the next deal.", mw < 400 and 0.45 or 0.56, SOFT, 89)
+  local r = self.options.rules
+  local multiplier = r.each_time_koi_koi and "EACH KOI-KOI" or (r.double_points_over_7 and "DOUBLE AT 7+" or "NONE")
+  local rows = {
+    { "ROUNDS", tostring(self.options.rounds), "cycle_rounds" },
+    { "RIVAL", AI_LABELS[self.options.ai], "cycle_ai" },
+    { "WAGER", tostring(self.options.stake) .. " GOLD", "cycle_stake" },
+    { "MULTIPLIER", multiplier, "cycle_multiplier" },
+    { "FLOWER SAKE", r.flower_viewing_sake and "ON" or "OFF", "toggle_flower" },
+    { "MOON SAKE", r.moon_viewing_sake and "ON" or "OFF", "toggle_moon" },
+    { "LUCKY HANDS", r.lucky_hands and "ON" or "OFF", "toggle_lucky" },
+  }
+  local gap = math.min(45, (mh - 130) / #rows)
+  local top = height * 0.5 + mh * 0.5 - 91
+  for i, entry in ipairs(rows) do
+    local text = entry[1] .. "     " .. entry[2]
+    self:add_button(width * 0.5, top - (i - 1) * gap, mw - 38, gap - 5, text, entry[3], true, true)
+  end
+  if self.notice then self:add_text(width * 0.5, height * 0.5 - mh * 0.5 + 70, self.notice, 0.47, RED, 89)
+  elseif self.tavern.stake > 0 then self:add_text(width * 0.5, height * 0.5 - mh * 0.5 + 70, "Starting now forfeits the current stake.", 0.47, RED, 89) end
+  self:add_button(width * 0.5 - (mw - 48) * 0.25, height * 0.5 - mh * 0.5 + 34, (mw - 58) * 0.5, 39, "START MATCH", "new_match", true, true)
+  self:add_button(width * 0.5 + (mw - 48) * 0.25, height * 0.5 - mh * 0.5 + 34, (mw - 58) * 0.5, 39, "CLOSE", "close_modal", true, true)
+end
+
 function UI:draw_modal_for_state(view, width, height)
-  if self.conceded or view.phase == "conceded" then
-    self:draw_modal(width, height, "MATCH CONCEDED", "The opponent wins this match.\nStart a new game when you are ready.", {{ label = "NEW GAME", action = "new_match" }, { label = "CLOSE", action = "close_modal" }}, RED)
+  if view.phase == "conceded" and self.dismissed_phase ~= view.phase and not self.modal then
+    local wager = self.tavern.last_result and string.format("\nWager: %d gold", self.tavern.last_result.change) or ""
+    self:draw_modal(width, height, "MATCH CONCEDED", "The opponent wins this match." .. wager .. "\nStart a new game when you are ready.", {{ label = "NEW GAME", action = "new_match" }, { label = "CLOSE", action = "close_modal" }}, RED)
     return
   end
   if self.intro and not self.modal then
     local dealer = view.dealer == "you" and "You deal first." or "CPU deals first."
-    self:draw_modal(width, height, "HANAFUDA KOI-KOI", "A compact standalone port of the card game.\n" .. dealer .. "\n\nPlay cards by month, form combinations, and choose Koi-Koi or Shobu.", {{ label = "PLAY", action = "start_game" }, { label = "RULES", action = "open_intro_rules" }}, GOLD)
+    self:draw_modal(width, height, "HANAFUDA KOI-KOI", "Visit the tavern table. Match cards by month and\nform combinations to score. " .. dealer .. "\n\nChoose a rival, house rules, and a gold wager in Settings.", {{ label = "PLAY", action = "start_game" }, { label = "RULES", action = "open_intro_rules" }, { label = "SETTINGS", action = "open_settings" }}, GOLD)
     return
   end
-  if self.modal == "rules" then
-    self:draw_modal(width, height, "HOW TO PLAY", "Match cards by month.\nCapture matching field cards, then draw and resolve the drawn card.\n\nComplete a combination to choose KOI-KOI (continue) or SHOBU (stop and score).\nHighlighted cards are the only legal choices.", {{ label = "CLOSE", action = "close_modal" }}, GOLD)
+  if self.modal == "menu" then
+    self:draw_menu(view, width, height)
+  elseif self.modal == "settings" then
+    self:draw_settings(width, height)
+  elseif self.modal == "rules" then
+    self:draw_modal(width, height, "HOW TO PLAY", "Match a hand card to a field card of the same month.\nThen reveal a deck card and match again. Three field\ncards of one month are all captured by the fourth.\n\nSHOBU banks your yaku. KOI-KOI keeps playing,\nbut the rival may score first. A 7+ point hand doubles\nunder the default rule. A tie pays neither player.", {{ label = "CLOSE", action = "close_modal" }}, GOLD)
   elseif self.modal == "cards" then
-    self:draw_modal(width, height, "CARD GUIDE", "B  BRIGHT   A  ANIMAL\nR  RIBBON   C  PLAIN\n\nThe procedural cards show month, category, and motif name.\nCard artwork and audio are intentionally not included.", {{ label = "CLOSE", action = "close_modal" }}, GREEN)
+    self:draw_modal(width, height, "CARD GUIDE / YAKU", "BRIGHT  3=5, 4=8, rainy 4=7, all 5=10\nANIMAL  boar+deer+butterfly=5; five=1, then +1\nRIBBON  poetry or blue trio=5; all six=10\n           five ribbons=1, then +1\nPLAIN  ten=1, then +1\nSAKE  cup+curtain or moon=5, if enabled\nLUCKY  four of one month or four pairs=6\n\nHover a card to see its month, flower, and motif.", {{ label = "CLOSE", action = "close_modal" }}, GREEN)
   elseif self.modal == "confirm_new" then
-    self:draw_modal(width, height, "START A NEW GAME?", "The current match will be discarded.", {{ label = "START NEW", action = "new_match" }, { label = "CANCEL", action = "close_modal" }}, GOLD)
+    self:draw_modal(width, height, "START A NEW GAME?", "The current match will be discarded.\nAn active wager is forfeited.", {{ label = "START NEW", action = "new_match" }, { label = "CANCEL", action = "close_modal" }}, GOLD)
   elseif self.modal == "confirm_concede" or view.phase == "confirm_concede" then
     self:draw_modal(width, height, "CONCEDE MATCH?", "This match will be awarded to the opponent.", {{ label = "CONCEDE", action = "confirm_concede" }, { label = "CANCEL", action = "cancel_concede" }}, RED)
   elseif view.phase == "player_match" and self.dismissed_phase ~= view.phase then
@@ -361,7 +573,8 @@ function UI:draw_modal_for_state(view, width, height)
     self:draw_modal(width, height, winner_text(view), string.format("Round score: YOU +%d   CPU +%d\nMatch score: YOU %d   CPU %d", safe_number(points.you, 0), safe_number(points.opponent, 0), safe_number(view.scores and view.scores.you, 0), safe_number(view.scores and view.scores.opponent, 0)), {{ label = "NEXT ROUND", action = "next_round" }, { label = "NEW GAME", action = "confirm_new" }}, GOLD)
   elseif view.phase == "match_over" and self.dismissed_phase ~= view.phase then
     local title = view.winner == "you" and "MATCH WON" or (view.winner == "opponent" and "MATCH LOST" or "MATCH DRAW")
-    self:draw_modal(width, height, title, string.format("Final score: YOU %d   CPU %d", safe_number(view.scores and view.scores.you, 0), safe_number(view.scores and view.scores.opponent, 0)), {{ label = "NEW GAME", action = "new_match" }, { label = "CLOSE", action = "close_modal" }}, view.winner == "you" and GREEN or RED)
+    local wager = self.tavern.last_result and string.format("\nWager: %+d gold   Purse: %d", self.tavern.last_result.change, self.tavern.gold) or ""
+    self:draw_modal(width, height, title, string.format("Final score: YOU %d   CPU %d", safe_number(view.scores and view.scores.you, 0), safe_number(view.scores and view.scores.opponent, 0)) .. wager, {{ label = "NEW GAME", action = "new_match" }, { label = "CLOSE", action = "close_modal" }}, view.winner == "you" and GREEN or RED)
   end
 end
 
@@ -386,11 +599,17 @@ function UI:render()
   self:draw_header(width, height, view)
   if portrait then
     local margin, card_w = 10, math.max(42, math.min(61, (width - 20 - 21) / 8))
-    self:draw_opponent(view, width * 0.5, height - 144, width - margin * 2, card_w, true)
-    self:draw_card_panel(view, width * 0.5, height * 0.52, width - margin * 2, 260, math.min(62, card_w), 5, true)
-    self:draw_hand(view, width * 0.5, 122, width - margin * 2, card_w, true)
-    self:draw_side(view, width * 0.5, height * 0.5 - 4, width - margin * 2, 92)
-    self:add_button(width * 0.5, 49, width - margin * 2, 35, "MENU / NEW GAME / CONCEDE", "confirm_new", true)
+    local top = height - 94
+    local field_h = math.min(290, math.max(195, height * 0.28))
+    local field_top = top - 100
+    local field_bottom = field_top - field_h
+    local status_y = field_bottom - 49
+    local hand_y = status_y - 39 - 10 - 65
+    self:draw_opponent(view, width * 0.5, top - 45, width - margin * 2, card_w, true)
+    self:draw_card_panel(view, width * 0.5, field_top - field_h * 0.5, width - margin * 2, field_h, math.min(62, card_w), 5, true)
+    self:draw_side(view, width * 0.5, status_y, width - margin * 2, 78)
+    self:draw_hand(view, width * 0.5, hand_y, width - margin * 2, card_w, true)
+    self:draw_portrait_controls(view, width)
   else
     local margin, gap = 14, 12
     local left_w, right_w = math.min(230, width * 0.19), math.min(248, width * 0.21)
@@ -404,14 +623,48 @@ function UI:render()
     self:draw_side(view, width - margin - right_w * 0.5, content_y + content_h * 0.5, right_w, content_h)
   end
   self:draw_modal_for_state(view, width, height)
+  self:draw_tooltip(width, height)
+end
+
+function UI:draw_tooltip(width, height)
+  if not self.hover or self.hover == "" then return end
+  local limit = width < 550 and 42 or 70
+  local lines, line = {}, ""
+  for word in string.gmatch(self.hover, "%S+") do
+    if #line + #word + 1 > limit and line ~= "" then lines[#lines + 1] = line; line = word
+    else line = line == "" and word or (line .. " " .. word) end
+  end
+  if line ~= "" then lines[#lines + 1] = line end
+  local text_value = table.concat(lines, "\n")
+  local tw = math.min(width - 20, width < 550 and 340 or 560)
+  local th = 20 + #lines * 17
+  local tx = math.max(tw * 0.5 + 10, math.min(width - tw * 0.5 - 10, self.hover_x))
+  local ty = math.max(th * 0.5 + 10, math.min(height - th * 0.5 - 10, self.hover_y + 36))
+  self:add_box(tx, ty, tw, th, vmath.vector4(0.02, 0.08, 0.09, 0.98), 96)
+  self:add_box(tx, ty + th * 0.5 - 2, tw - 4, 3, GOLD, 97)
+  self:add_text(tx, ty - 4, text_value, width < 550 and 0.46 or 0.57, WHITE, 98)
+end
+
+function UI:update_hover(x, y)
+  local tooltip, key = nil, nil
+  local modal = #self.modal_buttons > 0
+  for i = #self.hover_targets, 1, -1 do
+    local target = self.hover_targets[i]
+    if target.modal == modal and gui.pick_node(target.node, x, y) then tooltip, key = target.tooltip, target.key; break end
+  end
+  local changed = key ~= self.hover_key
+  self.hover, self.hover_key, self.hover_x, self.hover_y = tooltip, key, x, y
+  if changed then self:render() end
 end
 
 function UI:act(action)
   if not self.match then return end
+  self.hover, self.hover_key = nil, nil
   local ok, result, message = pcall(function() return self.match:act(action) end)
   if not ok or result == false then self.notice = tostring(ok and (message or result) or result) else self.notice = nil end
   if ok and result ~= false then
     local next_view = self.match:view()
+    self:settle_if_finished(next_view)
     if next_view.phase ~= self.last_phase then self.dismissed_phase = nil end
     self.last_phase = next_view.phase
   end
@@ -419,7 +672,8 @@ function UI:act(action)
 end
 
 function UI:button_action(action)
-  if action == "start_game" then self.intro = false; self.modal = nil; self:render(); return end
+  self.hover, self.hover_key = nil, nil
+  if action == "start_game" or action == "new_match" then self:begin_match(); return end
   if action == "open_intro_rules" then self.modal = "rules"; self:render(); return end
   if action == "close_modal" then
     local view = self.match and self.match:view() or {}
@@ -428,20 +682,62 @@ function UI:button_action(action)
     self:render(); return
   end
   if action == "cancel_concede" then self.modal = nil; self:act({ type = "cancel_concede" }); return end
+  if action == "open_menu" then self.modal = "menu"; self:render(); return end
+  if action == "open_settings" then self.modal = "settings"; self:render(); return end
+  if action == "cycle_rounds" then
+    local list = {1, 3, 6, 12}; for i, value in ipairs(list) do if value == self.options.rounds then self.options.rounds = list[i % #list + 1]; break end end
+    self:save_profile(); self:render(); return
+  end
+  if action == "cycle_ai" then
+    local list = {"weighted", "simple", "random"}; for i, value in ipairs(list) do if value == self.options.ai then self.options.ai = list[i % #list + 1]; break end end
+    self:save_profile(); self:render(); return
+  end
+  if action == "cycle_stake" then
+    local list = {0, 5, 10, 25, 50}; for i, value in ipairs(list) do if value == self.options.stake then self.options.stake = list[i % #list + 1]; break end end
+    self.notice = nil
+    self:save_profile(); self:render(); return
+  end
+  if action == "cycle_multiplier" then
+    local rules = self.options.rules
+    if rules.each_time_koi_koi then rules.each_time_koi_koi = false; rules.double_points_over_7 = false
+    elseif rules.double_points_over_7 then rules.double_points_over_7 = false; rules.each_time_koi_koi = true
+    else rules.double_points_over_7 = true end
+    self:save_profile(); self:render(); return
+  end
+  if action == "toggle_flower" then self.options.rules.flower_viewing_sake = not self.options.rules.flower_viewing_sake; self:save_profile(); self:render(); return end
+  if action == "toggle_moon" then self.options.rules.moon_viewing_sake = not self.options.rules.moon_viewing_sake; self:save_profile(); self:render(); return end
+  if action == "toggle_lucky" then self.options.rules.lucky_hands = not self.options.rules.lucky_hands; self:save_profile(); self:render(); return end
   if action == "open_rules" then self.modal = "rules"; self:render(); return end
   if action == "open_cards" then self.modal = "cards"; self:render(); return end
   if action == "confirm_new" then self.modal = "confirm_new"; self:render(); return end
   if action == "request_concede" then self.modal = nil; self:act({ type = "request_concede" }); return end
-  if action == "new_match" then self.conceded, self.intro, self.modal = false, false, nil; self:act({ type = "new_match" }); return end
+  if action == "select_hint" then return end
   self.modal = nil
   self:act({ type = action })
 end
 
 function UI:on_input(action_id, action)
-  if not action or (not action.pressed and not action.released) then return false end
-  if action.released then return true end
+  if not action then return false end
+  if action.pressed and action_id == hash("key_escape") then
+    local view = self.match and self.match:view() or {}
+    if view.phase == "confirm_concede" then self:button_action("cancel_concede")
+    elseif self.modal then self:button_action("close_modal") else self:button_action("open_menu") end
+    return true
+  end
+  if action.pressed and (action_id == hash("key_enter") or action_id == hash("key_space")) then
+    if #self.modal_buttons > 0 then
+      for _, button in ipairs(self.modal_buttons) do if button.enabled then self:button_action(button.action); return true end end
+    else
+      local _, primary, enabled = self:primary_action(self.match and self.match:view() or {})
+      if primary and enabled then self:button_action(primary); return true end
+    end
+  end
   local x, y = action.x, action.y
   if not x or not y then return false end
+  if not action.pressed then
+    if action_id == nil then self:update_hover(x, y) end
+    return false
+  end
   if #self.modal_buttons > 0 then
     for _, button in ipairs(self.modal_buttons) do
       if button.enabled and gui.pick_node(button.node, x, y) then self:button_action(button.action); return true end

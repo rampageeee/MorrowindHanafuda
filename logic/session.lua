@@ -53,10 +53,10 @@ function Session:_record_move(player, id, drawn, hits, captured, target)
 end
 function Session:_resolve(player, id, drawn, target)
  local p=self.pools[player]
- if not drawn then assert(remove(p.hand,id), "hand card missing") end
  local hits=matching(id,self.field)
+ assert(target==nil or contains(hits,target), "target is not on the field")
+ if not drawn then assert(remove(p.hand,id), "hand card missing") end
  if #hits==0 then self.field[#self.field+1]=id; self:_record_move(player,id,drawn,hits,false); return end
- assert(target==nil or cards.same_month(id,target), "invalid matching target")
  self:_capture(player,id,false)
  if #hits>=3 then for _,v in ipairs(hits) do self:_capture(player,v,true) end
  else self:_capture(player,target or hits[1],true) end
@@ -154,10 +154,27 @@ function Session:_next_turn()
  if self.current=="you" then self.phase="player_hand" else self:_ai_turn() end
 end
 function Session:_best_target(id,hits)
+ if self.ai=="random" then return hits[self:_random(#hits)] end
+ if self.ai=="simple" then return hits[1] end
  local best,bw=hits[1],-1; for _,v in ipairs(hits) do if weights[v]>bw then best,bw=v,weights[v] end end; return best
 end
 function Session:_ai_turn()
  local hand=self.pools.opponent.hand; if #hand==0 then self:_next_turn(); return end
+ if self.ai=="random" then
+  local chosen=hand[self:_random(#hand)]
+  local hits=matching(chosen,self.field)
+  self:_resolve("opponent",chosen,false,#hits>0 and self:_best_target(chosen,hits) or nil)
+  self:_after_hand_play("opponent"); return
+ end
+ if self.ai=="simple" then
+  local chosen,target=hand[1],nil
+  for _,id in ipairs(hand) do
+   local hits=matching(id,self.field)
+   if #hits>0 then chosen,target=id,hits[1]; break end
+  end
+  self:_resolve("opponent",chosen,false,target)
+  self:_after_hand_play("opponent"); return
+ end
  local chosen,target,best,discard,low=nil,nil,-1,nil,nil
  for _,id in ipairs(hand) do
   local hits=matching(id,self.field)
@@ -168,7 +185,10 @@ function Session:_ai_turn()
  chosen=chosen or discard; self:_resolve("opponent",chosen,false,target); self:_after_hand_play("opponent")
 end
 function Session:_ai_call()
- -- The original weighted brain currently always chooses Shobu; retain that policy.
+ if self.ai=="random" and #self.pools.opponent.hand>0 and self:_random(2)==1 then
+  self.calls.opponent=self.calls.opponent+1; self:_next_turn(); return
+ end
+ -- The source's weighted brain always chooses Shobu.
  self:_finish_round("opponent",nil,"shobu")
 end
 function Session:_confirm_pending()
@@ -295,12 +315,13 @@ function Session:view()
   selectable=selectable,new_combinations=copy(self.new_combinations),winner=self.winner,can_koi_koi=self.phase=="player_decision" and #self.pools.you.hand>0,can_shobu=self.phase=="player_decision",
   can_continue=self.phase=="round_over",can_draw=self.phase=="player_draw",can_advance=self.phase=="opponent_draw" or self.phase=="opponent_drawn",can_confirm_play=self.phase=="player_play" and self.pending and #matching(self.pending.card,self.field)~=2,can_cancel_play=self.phase=="player_play",can_confirm_draw=self.phase=="player_drawn" and self.pending and #matching(self.pending.card,self.field)~=2,can_concede=self.phase~="match_over" and self.phase~="conceded" and self.phase~="confirm_concede",can_new_match=true,
   cards=cards.data,pending_card=self.pending and self.pending.card or nil,pending_drawn=self.pending and self.pending.drawn or false,pending_targets=self.pending and matching(self.pending.card,self.field) or {},lucky_hands=copy(self.lucky_hands or {}),lucky_hand_details={you=lucky_labels(self.lucky_hands and self.lucky_hands.you),opponent=lucky_labels(self.lucky_hands and self.lucky_hands.opponent)},
-  combinations={you=combo_labels(self.combos.you),opponent=combo_labels(self.combos.opponent)},decision=decision,round_result=copy(self.round_result),match_result=copy(self.match_result),last_move=copy(self.last_move),confirmation=copy(self.confirmation),rules=copy(self.rules) }
+  combinations={you=combo_labels(self.combos.you),opponent=combo_labels(self.combos.opponent)},decision=decision,round_result=copy(self.round_result),match_result=copy(self.match_result),last_move=copy(self.last_move),confirmation=copy(self.confirmation),rules=copy(self.rules),ai=self.ai }
 end
 function M.new(options)
  options=options or {}; local seed=tonumber(options.seed) or 1; seed=math.floor(seed)%2147483647; if seed<=0 then seed=1 end
  local given=options.rules or {}; local each=given.each_time_koi_koi==true; local rules={ double_points_over_7=(given.double_points_over_7~=false) and not each, flower_viewing_sake=given.flower_viewing_sake~=false, moon_viewing_sake=given.moon_viewing_sake~=false, lucky_hands=given.lucky_hands~=false, each_time_koi_koi=each }
- local s=setmetatable({rounds=math.max(1,math.floor(tonumber(options.rounds) or 3)),seed=seed,rng=seed,round=1,scores={you=0,opponent=0},rules=rules,started=false,presentation_steps=options.presentation_steps==true},Session)
+ local ai=options.ai or "weighted"; assert(ai=="weighted" or ai=="simple" or ai=="random", "unknown AI mode")
+ local s=setmetatable({rounds=math.max(1,math.floor(tonumber(options.rounds) or 3)),seed=seed,rng=seed,round=1,scores={you=0,opponent=0},rules=rules,ai=ai,started=false,presentation_steps=options.presentation_steps==true},Session)
  s.dealer=(s:_random(2)==1) and "you" or "opponent"; return s
 end
 return M

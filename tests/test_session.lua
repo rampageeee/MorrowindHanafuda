@@ -27,8 +27,8 @@ local function legal_choice(view)
     return nil
 end
 
-local function run_match(seed, rounds)
-    local match = session.new({ seed=seed, rounds=rounds })
+local function run_match(seed, rounds, ai)
+    local match = session.new({ seed=seed, rounds=rounds, ai=ai })
     a.truthy(match:start(), "a new session starts")
     local trace, score_before, observed_rounds = {}, { you=0, opponent=0 }, 0
     for step = 1, 500 do
@@ -91,6 +91,19 @@ return function()
     a.equal(initial.last_move, nil, "an untouched session safely exposes no previous move")
     a.equal(initial.round_result, nil, "an untouched session safely exposes no round result")
     a.equal(initial.match_result, nil, "an active session safely exposes no match result")
+    a.equal(initial.ai, "weighted", "the default rival keeps the source weighted AI")
+
+    local guarded = session.new({ seed=2 })
+    guarded:start()
+    local guard_view = guarded:view()
+    local hand_id = guard_view.hand[1]
+    local wrong_target
+    for _, field_id in ipairs(guard_view.field) do
+        if not cards.same_month(hand_id, field_id) then wrong_target = field_id; break end
+    end
+    local valid = pcall(function() guarded:_resolve("you", hand_id, false, wrong_target) end)
+    a.falsy(valid, "a target outside the matching field cards is rejected")
+    a.table_equal(guarded:view().hand, guard_view.hand, "rejected target does not remove a hand card")
 
     local ok = match:act({ type="select_card", card_id=0 })
     a.falsy(ok, "a card outside the hand is illegal")
@@ -143,6 +156,16 @@ return function()
     a.equal(completed, 2, "two intermediate rounds required explicit continuation")
     a.equal(final.phase, "match_over", "final round advances to match result")
     a.equal(final.winner, expected_winner(final.scores), "winner follows final accumulated totals")
+
+    for _, mode in ipairs({ "simple", "random" }) do
+        local opponent, trace = run_match(24680, 2, mode)
+        a.equal(opponent:view().phase, "match_over", mode .. " AI completes a match")
+        a.equal(trace[1].ai, mode, mode .. " AI is identified in the view")
+        local replay, replay_trace = run_match(24680, 2, mode)
+        a.table_equal(replay_trace, trace, mode .. " AI remains deterministic with the same seed")
+    end
+    local good, err = pcall(session.new, { ai="unknown" })
+    a.falsy(good, "unknown AI modes are rejected")
 
     -- new_match resets both score and the deterministic opening state.
     local restarted = session.new({ seed=2, rounds=3 })
