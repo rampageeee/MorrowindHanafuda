@@ -1,6 +1,8 @@
 [project]
 title = Hanafuda Koi-Koi
 version = 1.0.0
+dependencies#0 = https://github.com/defold/extension-fmod/archive/refs/tags/v0.1.1.zip
+custom_resources = banks/
 
 [bootstrap]
 main_collection = /game/main.collectionc
@@ -19,6 +21,9 @@ game_binding = /input/game.input_bindingc
 [graphics]
 default_texture_min_filter = linear
 default_texture_mag_filter = linear
+
+[fmod]
+speaker_mode = stereo
 
 [render]
 clear_color = 0.055 0.075 0.11 1.0

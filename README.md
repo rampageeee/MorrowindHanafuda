@@ -7,6 +7,8 @@ purse and rival selection replace the original Morrowind NPC service flow.
 This repository contains no original card textures, background images, or
 sound effects: those assets are separately licensed. Card faces are drawn
 with styled Defold GUI nodes, with month, category, and motif tooltips.
+FMOD Studio integration is ready for original audio banks; see
+[docs/AUDIO.md](docs/AUDIO.md) for the event names and setup.
 
 ## Requirements
 

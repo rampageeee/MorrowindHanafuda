@@ -12,3 +12,10 @@ faces using Defold GUI primitives and text.
 
 The Defold engine and Bob build tool are separate software used to build this
 project; they are not bundled here and retain their own licenses.
+
+## FMOD
+
+The project references Defold's FMOD extension, which uses FMOD technology by
+Firelight Technologies Pty Ltd. FMOD binaries and authored sound banks are not
+checked into this repository. Distribution with FMOD requires following the
+applicable FMOD license and credit requirements, including the FMOD logo.

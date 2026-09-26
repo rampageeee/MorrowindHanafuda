@@ -7,6 +7,7 @@
 local session = require "logic.session"
 local cards = require "logic.cards"
 local tavern = require "logic.tavern"
+local Audio = require "game.audio"
 local UI = {}
 
 local T = cards.type
@@ -55,6 +56,12 @@ local HELP = {
   new_match = "Start the next match using these settings and a new shuffle.",
 }
 local AI_LABELS = { random = "TAVERN NOVICE", simple = "HOUSE REGULAR", weighted = "AKAVIRI ADEPT" }
+local UI_CUES = {
+  open_intro_rules = true, close_modal = true, open_menu = true, open_settings = true,
+  cycle_rounds = true, cycle_ai = true, cycle_stake = true, cycle_multiplier = true,
+  toggle_flower = true, toggle_moon = true, toggle_lucky = true,
+  open_rules = true, open_cards = true, confirm_new = true, cancel_concede = true,
+}
 
 local TYPE_COLORS = {
   [T.bright] = vmath.vector4(0.95, 0.68, 0.23, 1.0),
@@ -136,7 +143,10 @@ function UI:init()
       flower_viewing_sake = true, moon_viewing_sake = true, lucky_hands = true } }
   self.tavern, self.match_serial, self.settled_match = tavern.new(100), 0, true
   self.hover, self.hover_key, self.hover_x, self.hover_y = nil, nil, 0, 0
+  self.tooltip_nodes, self.active_hover_target = {}, nil
   self:load_profile()
+  self.audio = Audio.new()
+  self.audio:init()
 
   local ok, result = pcall(session.new, { rounds = self.options.rounds, seed = os.time(), presentation_steps = true, ai = self.options.ai, rules = self.options.rules })
   if ok and result then
@@ -195,6 +205,7 @@ function UI:begin_match()
   self.error_message, self.notice, self.modal, self.intro, self.dismissed_phase = nil, nil, nil, false, nil
   self:save_profile()
   self:settle_if_finished(self.match:view())
+  self.audio:play("deal")
   self:render()
   return true
 end
@@ -210,6 +221,8 @@ end
 
 function UI:final()
   self:save_profile()
+  if self.audio then self.audio:final() end
+  self:clear_tooltip()
   for _, node in ipairs(self.dynamic_nodes or {}) do if node then gui.delete_node(node) end end
 end
 
@@ -241,12 +254,15 @@ function UI:add_button(x, y, width, height, label, action_type, enabled, modal)
   local tooltip = HELP[action_type] or label
   local key = "button:" .. tostring(action_type) .. ":" .. label
   local hovered = self.hover_key == key
-  local color = enabled and (hovered and vmath.vector4(0.20, 0.55, 0.43, 1.0) or vmath.vector4(0.13, 0.39, 0.34, 1.0)) or vmath.vector4(0.13, 0.22, 0.22, 1.0)
+  local base_color = enabled and vmath.vector4(0.13, 0.39, 0.34, 1.0) or vmath.vector4(0.13, 0.22, 0.22, 1.0)
+  local hover_color = enabled and vmath.vector4(0.20, 0.55, 0.43, 1.0) or base_color
+  local color = hovered and hover_color or base_color
   local box = self:add_box(x, y, width, height, color, modal and 91 or 31)
   self:add_box(x, y + height * 0.5 - 2, width - 4, 4, enabled and GOLD or MUTED, modal and 92 or 32)
   local item = { node = box, action = action_type, enabled = enabled ~= false }
   if modal then self.modal_buttons[#self.modal_buttons + 1] = item else self.buttons[#self.buttons + 1] = item end
-  self.hover_targets[#self.hover_targets + 1] = { node = box, tooltip = enabled and tooltip or (label .. " is unavailable now."), key = key, modal = modal == true }
+  self.hover_targets[#self.hover_targets + 1] = { node = box, tooltip = enabled and tooltip or (label .. " is unavailable now."), key = key, modal = modal == true,
+    highlight_node = box, base_color = base_color, hover_color = hover_color }
   self:add_text(x, y - 5, label, width < 120 and 0.63 or 0.72, enabled and WHITE or MUTED, modal and 93 or 33)
   return box
 end
@@ -254,9 +270,11 @@ end
 function UI:add_card(x, y, width, height, id, face_up, is_selectable, zone, dim)
   local key = "card:" .. tostring(id) .. ":" .. zone
   local hovered = face_up and self.hover_key == key
-  local border_color = is_selectable and GOLD or (hovered and GREEN or vmath.vector4(0.03, 0.07, 0.08, 1.0))
+  local base_color = is_selectable and GOLD or vmath.vector4(0.03, 0.07, 0.08, 1.0)
+  local hover_color = is_selectable and GOLD or GREEN
+  local border_color = hovered and hover_color or base_color
   self:add_box(x, y - 3, width + 8, height + 9, vmath.vector4(0.015, 0.045, 0.05, 0.85), 8)
-  self:add_box(x, y, width + 6, height + 6, border_color, 9)
+  local border = self:add_box(x, y, width + 6, height + 6, border_color, 9)
   local body_color = face_up and CARD_PAPER or vmath.vector4(0.08, 0.22, 0.28, 1.0)
   if dim then body_color = vmath.vector4(body_color.x * 0.42, body_color.y * 0.42, body_color.z * 0.42, 1.0) end
   local body = self:add_box(x, y, width, height, body_color, 10)
@@ -278,7 +296,8 @@ function UI:add_card(x, y, width, height, id, face_up, is_selectable, zone, dim)
     self:add_text(x, y - height * 0.5 - 13, zone == "field" and "MATCH" or "PLAY", width < 66 and 0.42 or 0.48, GOLD, 14)
     self.hit_targets[#self.hit_targets + 1] = { node = body, action = "select_card", card_id = id }
   end
-  self.hover_targets[#self.hover_targets + 1] = { node = body, tooltip = card_tooltip(id, zone), key = key, modal = false }
+  self.hover_targets[#self.hover_targets + 1] = { node = body, tooltip = card_tooltip(id, zone), key = key, modal = false,
+    highlight_node = border, base_color = base_color, hover_color = hover_color }
   return body
 end
 
@@ -289,8 +308,10 @@ function UI:panel(x, y, width, height, title, alternate)
 end
 
 function UI:clear_dynamic()
+  self:clear_tooltip()
   for _, node in ipairs(self.dynamic_nodes) do if node then gui.delete_node(node) end end
   self.dynamic_nodes, self.hit_targets, self.hover_targets, self.buttons, self.modal_buttons = {}, {}, {}, {}, {}
+  self.active_hover_target = nil
 end
 
 function UI:draw_header(width, height, view)
@@ -626,6 +647,25 @@ function UI:render()
   self:draw_tooltip(width, height)
 end
 
+function UI:clear_tooltip()
+  for _, item in ipairs(self.tooltip_nodes or {}) do gui.delete_node(item.node) end
+  self.tooltip_nodes = {}
+  self.tooltip_anchor_x, self.tooltip_anchor_y = nil, nil
+end
+
+function UI:position_tooltip(width, height)
+  if #self.tooltip_nodes == 0 then return end
+  local tw, th = self.tooltip_width, self.tooltip_height
+  local tx = math.max(tw * 0.5 + 10, math.min(width - tw * 0.5 - 10, self.hover_x))
+  local ty = math.max(th * 0.5 + 10, math.min(height - th * 0.5 - 10, self.hover_y + 36))
+  local dx, dy = tx - self.tooltip_anchor_x, ty - self.tooltip_anchor_y
+  if dx == 0 and dy == 0 then return end
+  for _, item in ipairs(self.tooltip_nodes) do
+    gui.set_position(item.node, vmath.vector3(item.x + dx, item.y + dy, 0))
+  end
+  self.tooltip_anchor_x, self.tooltip_anchor_y = tx, ty
+end
+
 function UI:draw_tooltip(width, height)
   if not self.hover or self.hover == "" then return end
   local limit = width < 550 and 42 or 70
@@ -640,21 +680,44 @@ function UI:draw_tooltip(width, height)
   local th = 20 + #lines * 17
   local tx = math.max(tw * 0.5 + 10, math.min(width - tw * 0.5 - 10, self.hover_x))
   local ty = math.max(th * 0.5 + 10, math.min(height - th * 0.5 - 10, self.hover_y + 36))
-  self:add_box(tx, ty, tw, th, vmath.vector4(0.02, 0.08, 0.09, 0.98), 96)
-  self:add_box(tx, ty + th * 0.5 - 2, tw - 4, 3, GOLD, 97)
-  self:add_text(tx, ty - 4, text_value, width < 550 and 0.46 or 0.57, WHITE, 98)
+  local function tooltip_box(x, y, w, h, color)
+    local node = gui.new_box_node(vmath.vector3(x, y, 0), vmath.vector3(w, h, 0))
+    gui.set_color(node, color)
+    self.tooltip_nodes[#self.tooltip_nodes + 1] = { node = node, x = x, y = y }
+  end
+  tooltip_box(tx, ty, tw, th, vmath.vector4(0.02, 0.08, 0.09, 0.98))
+  tooltip_box(tx, ty + th * 0.5 - 2, tw - 4, 3, GOLD)
+  local node = gui.new_text_node(vmath.vector3(tx, ty - 4, 0), text_value)
+  gui.set_font(node, SYSTEM_FONT)
+  gui.set_color(node, WHITE)
+  local scale = width < 550 and 0.46 or 0.57
+  gui.set_scale(node, vmath.vector3(scale, scale, 1))
+  self.tooltip_nodes[#self.tooltip_nodes + 1] = { node = node, x = tx, y = ty - 4 }
+  self.tooltip_width, self.tooltip_height = tw, th
+  self.tooltip_anchor_x, self.tooltip_anchor_y = tx, ty
 end
 
 function UI:update_hover(x, y)
-  local tooltip, key = nil, nil
+  local target
   local modal = #self.modal_buttons > 0
   for i = #self.hover_targets, 1, -1 do
-    local target = self.hover_targets[i]
-    if target.modal == modal and gui.pick_node(target.node, x, y) then tooltip, key = target.tooltip, target.key; break end
+    local candidate = self.hover_targets[i]
+    if candidate.modal == modal and gui.pick_node(candidate.node, x, y) then target = candidate; break end
   end
+  local key = target and target.key or nil
   local changed = key ~= self.hover_key
-  self.hover, self.hover_key, self.hover_x, self.hover_y = tooltip, key, x, y
-  if changed then self:render() end
+  if target ~= self.active_hover_target then
+    if self.active_hover_target then gui.set_color(self.active_hover_target.highlight_node, self.active_hover_target.base_color) end
+    if target then gui.set_color(target.highlight_node, target.hover_color) end
+    self.active_hover_target = target
+  end
+  self.hover, self.hover_key, self.hover_x, self.hover_y = target and target.tooltip or nil, key, x, y
+  if changed then
+    self:clear_tooltip()
+    self:draw_tooltip(gui.get_width(), gui.get_height())
+  else
+    self:position_tooltip(gui.get_width(), gui.get_height())
+  end
 end
 
 function UI:act(action)
@@ -667,12 +730,19 @@ function UI:act(action)
     self:settle_if_finished(next_view)
     if next_view.phase ~= self.last_phase then self.dismissed_phase = nil end
     self.last_phase = next_view.phase
+    local cue = ({ select_card = "select", confirm_play = "play", draw_card = "draw",
+      confirm_draw = "play", koi_koi = "koi_koi", next_round = "deal" })[action.type]
+    if next_view.phase == "round_over" or next_view.phase == "match_over" or next_view.phase == "conceded" then
+      cue = next_view.winner == "you" and "win" or (next_view.winner == "opponent" and "lose" or "draw_round")
+    end
+    if cue then self.audio:play(cue) end
   end
   self:render()
 end
 
 function UI:button_action(action)
   self.hover, self.hover_key = nil, nil
+  if UI_CUES[action] then self.audio:play("ui") end
   if action == "start_game" or action == "new_match" then self:begin_match(); return end
   if action == "open_intro_rules" then self.modal = "rules"; self:render(); return end
   if action == "close_modal" then
